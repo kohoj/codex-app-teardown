@@ -1,8 +1,32 @@
-# OpenAI Codex Desktop App — Tech Stack Teardown
+# OpenAI Codex Desktop App - Tech Stack Teardown
 
-Reverse-engineered tech stack analysis of the OpenAI Codex desktop application (macOS).
+Reverse-engineered tech stack analysis of the OpenAI Codex desktop application (macOS), with a product-architecture read of where Codex is heading.
 
 > **Disclaimer**: This is a third-party analysis based on publicly available files within the installed application bundle. No proprietary source code was accessed or decompiled.
+
+---
+
+## Current Read
+
+Codex is no longer best understood as "a chat UI for code." The desktop app is a command center for parallel agent threads, and the local Rust CLI is the execution kernel that gives those threads access to files, shell, Git, MCP, browser/computer-use surfaces, skills, plugins, and policy gates.
+
+The product direction is clear:
+
+1. **Thread-first work model**: work is organized around durable Codex threads, not ephemeral prompts.
+2. **Local-first execution with cloud escape hatches**: local, worktree, remote, and cloud tasks are different placements of the same agent loop.
+3. **Policy as product surface**: sandboxing, approval rules, writable roots, network policy, AGENTS.md, skills, hooks, and plugins are first-class primitives, not incidental config.
+4. **Desktop as orchestration layer**: Electron owns multi-window UX, Git review, previews, terminals, automation setup, and platform permissions; Rust owns agent execution and tool enforcement.
+5. **Agents as operating substrate**: subagents, skills, MCP servers, app connectors, and automations point toward a programmable engineering workbench rather than a single assistant.
+
+## Public Context Anchors
+
+| Source | Why it matters |
+|--------|----------------|
+| [Codex app features](https://developers.openai.com/codex/app/features) | Officially positions the app around parallel threads, worktrees, built-in Git tools, and integrated terminals. |
+| [Codex CLI README](https://github.com/openai/codex/blob/main/README.md) | Defines the CLI as a local coding agent and links the CLI, IDE, app, and cloud surfaces. |
+| [Codex CLI features](https://developers.openai.com/codex/cli/features) | Shows cloud-task control from the CLI, confirming that local and cloud execution are connected. |
+| [Codex glossary](https://developers.openai.com/codex/glossary) | Defines shared primitives such as agent, thread, AGENTS.md, approval policy, plugin, skill, subagent, and worktree. |
+| [Codex changelog](https://developers.openai.com/codex/changelog) | Confirms plugins and skills as cross-surface reusable workflow packages. |
 
 ---
 
@@ -11,12 +35,14 @@ Reverse-engineered tech stack analysis of the OpenAI Codex desktop application (
 | Property | Value |
 |----------|-------|
 | Package Name | `openai-codex-electron` |
-| Version | `26.409.20454` (Build 1462) |
+| Version | `26.608.12217` (Build 3722) |
 | Bundle ID | `com.openai.codex` |
-| Total Size | **460MB** |
+| Total Size | **1.0GB** |
 | Min macOS | 12.0 |
 | Architecture | ARM64 (Apple Silicon) |
 | Package Manager | pnpm (monorepo, workspace protocol) |
+| Build Flavor | `prod` |
+| Appcast | `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` |
 
 ---
 
@@ -24,9 +50,9 @@ Reverse-engineered tech stack analysis of the OpenAI Codex desktop application (
 
 | Component | Version | Purpose |
 |-----------|---------|---------|
-| **Electron** | 41.2.0 | Desktop app framework |
-| **Chromium** | 146.0.7680.179 | Rendering engine |
-| **Node.js** | v24.14.0 | Main process runtime |
+| **Electron** | 42.1.0 | Desktop app framework |
+| **Chromium** | 149.0.7827.54 | Rendering engine |
+| **Node.js** | Electron-bundled runtime | Main process runtime |
 | **Electron Forge** | 7.11.1 | Build/package/publish pipeline |
 | **Sparkle** | - | macOS auto-update (Ed25519 signed) |
 | **Squirrel** | - | Windows auto-update |
@@ -35,27 +61,42 @@ Reverse-engineered tech stack analysis of the OpenAI Codex desktop application (
 
 ### 1.1 Main Process Architecture
 
-```
-bootstrap.js → main.js (lazy loaded)
-                ├── IpcRouter (inter-window message routing)
-                ├── WindowContext (multi-window management)
-                ├── SparkleManager (update management)
-                ├── ElectronAppServerConnection (Rust CLI communication)
-                │   ├── stdio transport (local)
-                │   └── WebSocket transport (remote SSH)
-                ├── StdioConnection (spawn Rust binary)
-                └── Sentry (error reporting)
+```text
+bootstrap.js -> main.js (lazy loaded)
+                |-- IpcRouter (inter-window message routing)
+                |-- WindowContext (multi-window management)
+                |-- SparkleManager (update management)
+                |-- ElectronAppServerConnection (Rust CLI communication)
+                |   |-- stdio transport (local)
+                |   `-- WebSocket transport (remote SSH)
+                |-- StdioConnection (spawn Rust binary)
+                `-- Sentry (error reporting)
 ```
 
 - **IPC channel naming**: `codex_desktop:*` prefix
 - **Preload script**: Exposes safe API via `contextBridge.exposeInMainWorld('electronBridge', ...)`
-- **Worker process**: Standalone worker.js, supports message routing between multiple webContents
+- **Worker process**: Standalone `worker.js`, supports message routing between multiple webContents
+- **Additional entrypoints observed in 26.608.12217**: `codex-micro-service`, `comment-preload`, `trace-recording-upload`, `workspace-root-drop-handler`, and `avatar-overlay-composition-surface-preload`
+
+### 1.2 macOS Platform Permissions
+
+| Permission / Integration | Evidence | Interpretation |
+|--------------------------|----------|----------------|
+| Apple Events + AppleScript | `NSAppleEventsUsageDescription`, `NSAppleScriptEnabled`, `scripting.sdef` | Enables controlled interaction with other Mac apps. |
+| Microphone / camera / audio capture | `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, `NSAudioCaptureUsageDescription` | Supports voice, video, and realtime capture workflows. |
+| Custom URL scheme | `codex://` | Allows deep links back into the desktop app. |
+| Document handling | Folder, CSV, TSV, XLS, XLSM, XLSX roles | Lets Codex open or inspect project and data artifacts directly. |
+| Notarization | Developer ID: OpenAI OpCo, LLC; stapled ticket | Standard hardened macOS distribution path. |
 
 ---
 
 ## 2. Rust Core Engine (codex CLI)
 
-**Binary size**: 144MB (ARM64 Mach-O)
+**Bundled binary**: `/Contents/Resources/codex`
+
+**Binary size**: 197MB (ARM64 Mach-O)
+
+**Observed CLI**: `codex-cli 0.130.0`
 
 ### 2.1 Internal Module Structure
 
@@ -116,6 +157,7 @@ bootstrap.js → main.js (lazy loaded)
 ### 2.3 Communication Protocol
 
 Electron ↔ Rust CLI uses **JSON-RPC** style RPC:
+
 - **Local mode**: stdio transport (spawns Rust binary)
 - **Remote mode**: WebSocket transport (SSH forwarding to remote servers)
 - Methods: `thread/list`, `account/read`, `config/read`, `skills/list`, `model/list`, `collaborationMode/list`, etc.
@@ -272,10 +314,19 @@ Built-in animations (from JS filenames): `analyze_image_animation`, `browsing_an
 
 ## 4. Native Modules (app.asar.unpacked)
 
-| Module | Purpose |
-|--------|---------|
-| **better-sqlite3** 12.8.0 | SQLite database (conversation/thread persistence) |
-| **node-pty** 1.1.0 | Native pseudo-terminal |
+| Module | Version / Size | Purpose |
+|--------|----------------|---------|
+| **better-sqlite3** | 12.9.0 / native `.node` 1.8MB | SQLite database (conversation/thread persistence) |
+| **node-pty** | 1.1.0 / native `.node` 100KB | Pseudo-terminal process |
+| **objc-js** | 1.5.0 | Objective-C bridge for macOS integration |
+| **avatar-overlay.node** | native resource | App overlay / capture integration |
+| **browser-use-peer-authorization.node** | native resource | Browser-use authorization bridge |
+| **devicecheck.node** | native resource | Apple DeviceCheck integration |
+| **input-monitoring-permission.node** | native resource | macOS input-monitoring permission checks |
+| **remote-control-device-key.node** | native resource | Remote-control key handling |
+| **sparkle.node** | native resource | Sparkle update bridge |
+
+Additional bundled executables: `codex` (197MB), `codex_chronicle` (4.3MB), and `rg` (3.9MB).
 
 ---
 
@@ -319,7 +370,7 @@ Android Studio, BBEdit, Cmder, **Cursor**, Finder, **Ghostty**, GoLand, IntelliJ
 | **TypeScript** | 5.9.3 | Type system |
 | **tsgo** | - | Go-based TS compiler (Microsoft) |
 | **Vite** | 8.0.3 | Frontend build / HMR |
-| **Vitest** | 4.1.2 | Unit testing |
+| **Vitest** | 4.1.5 | Unit testing |
 | **Playwright** | 1.58.2 | E2E testing |
 | **oxlint** | - | Rust-based ultra-fast linter |
 | **oxfmt** | - | Rust-based code formatter |
@@ -330,12 +381,16 @@ Android Studio, BBEdit, Cmder, **Cursor**, Finder, **Ghostty**, GoLand, IntelliJ
 
 ## 9. Frontend Asset Statistics
 
+Observed in `26.608.12217` `app.asar`:
+
 | Type | Count |
 |------|-------|
-| JS Chunks | 615 |
-| CSS Files | 5 |
-| Font Files | 59 (all KaTeX math fonts) |
-| Image Assets | 31 (IDE icons, etc.) |
+| Webview asset files | 1,802 |
+| JS / MJS chunks | 1,595 |
+| CSS files | 30 |
+| Font files | 89 |
+| Image assets | 75 |
+| IDE app icon assets | 27 |
 | Syntax Grammars | ~448 |
 | Code Themes | ~50 |
 
@@ -343,49 +398,44 @@ Android Studio, BBEdit, Cmder, **Cursor**, Finder, **Ghostty**, GoLand, IntelliJ
 
 ## 10. Architecture Diagram
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  Electron Shell                      │
-│  ┌──────────────────┐  ┌──────────────────────────┐ │
-│  │   Main Process    │  │     Renderer (Webview)    │ │
-│  │  (Node.js v24)    │  │                          │ │
-│  │                  │  │  React 19 + Jotai + Radix │ │
-│  │  IpcRouter       │  │  ProseMirror + Lexical    │ │
-│  │  SparkleManager  │  │  xterm.js + Mermaid + D3  │ │
-│  │  Sentry          │  │  Shiki + KaTeX            │ │
-│  │  Statsig         │  │  Tailwind CSS             │ │
-│  │  better-sqlite3  │  │  Framer Motion            │ │
-│  │  node-pty        │  │                          │ │
-│  └────────┬─────────┘  └──────────────────────────┘ │
-│           │ stdio / WebSocket (JSON-RPC)             │
-│  ┌────────▼─────────────────────────────────────────┐│
-│  │          Rust Core Engine (144MB ARM64)           ││
-│  │                                                  ││
-│  │  codex-core ─── codex-api (OpenAI Responses API) ││
-│  │  codex-exec ─── codex-sandbox (bwrap/landlock)   ││
-│  │  codex-mcp ──── codex-tools (permissions)        ││
-│  │  codex-tui ──── codex-spawn (sub-agents)         ││
-│  │  tree-sitter ── syntect ── sqlx-sqlite            ││
-│  │  tokio ──────── reqwest ── hyper ── axum          ││
-│  │  sentry ─────── opentelemetry ── tracing          ││
-│  │  cpal ────────── WebRTC (realtime audio)          ││
-│  └──────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────┘
+```text
++-----------------------------------------------------+
+|                  Electron Shell                      |
+|                                                     |
+|  +------------------+   +-------------------------+ |
+|  |   Main Process   |   |    Renderer / Webview   | |
+|  |                  |   |                         | |
+|  |  IpcRouter       |   |  React 19 + Jotai       | |
+|  |  WindowContext   |   |  Radix + Framer Motion  | |
+|  |  SparkleManager  |   |  ProseMirror + Lexical  | |
+|  |  Sentry/Statsig  |   |  xterm.js + Shiki       | |
+|  |  native bridges  |   |  Mermaid + D3 + KaTeX   | |
+|  +--------+---------+   +-------------------------+ |
+|           | stdio / WebSocket / app-server protocol  |
+|  +--------v----------------------------------------+ |
+|  |          Rust Core Engine (197MB ARM64)          | |
+|  |                                                 | |
+|  |  codex-core      codex-api      codex-config    | |
+|  |  codex-tools     codex-mcp      codex-hooks     | |
+|  |  codex-spawn     codex-plugin   codex-skills    | |
+|  |  codex-rollout   codex-cloud    codex-otel      | |
+|  |  shell/git/fs/search/sandbox/browser bridges     | |
+|  +-------------------------------------------------+ |
++-----------------------------------------------------+
 ```
 
 ---
 
 ## Key Design Highlights
 
-1. **Dual-language architecture**: Electron (TypeScript) handles GUI, Rust handles the core engine — they communicate via JSON-RPC over stdio/WebSocket
-2. **Dual editor engines**: ProseMirror + Lexical coexist, likely used for different input scenarios
-3. **Triple state management**: Jotai (primary) + @preact/signals (perf hotspots) + @tanstack/react-query (async data)
-4. **Collaborative editing**: YJS CRDT framework integrated, hinting at potential future multi-user collaboration
-5. **Remote development**: Built-in SSH WebSocket transport for connecting to remote Codex instances
-6. **Real-time voice**: Rust side integrates cpal/coreaudio + WebRTC for voice interaction
-7. **Dual MCP implementation**: JS side (MCP SDK 1.24.3) + Rust side (rmcp 0.15.0) both implement the MCP protocol
-8. **Type bridging**: Uses `ts-rs` to auto-generate TypeScript type definitions from Rust, ensuring cross-language type safety
+1. **Dual-language architecture**: Electron/TypeScript owns desktop UX; Rust owns the agent runtime, tool execution, config, permissions, rollout history, and protocol boundary.
+2. **Thread/worktree model**: The app is optimized for parallel durable work, with local and worktree modes mapped onto Git isolation instead of treating tasks as stateless chats.
+3. **Tool plane is the product**: shell, Git, search, browser, computer use, MCP, skills, plugins, hooks, and approval policy form a unified capability layer.
+4. **Desktop-native control surface**: macOS permissions, native modules, Apple Events, custom URL scheme, terminal, previews, and Git review make Codex feel like an IDE companion rather than a web app wrapper.
+5. **Cloud and local converge**: CLI cloud-task commands, app-server protocol, remote transport, and Codex Web point to one agent substrate with multiple execution placements.
+6. **Type bridging and protocol rigor**: `ts-rs`, shared app-server protocol packages, Zod, and JSON-RPC-style transport reduce drift across Rust and TypeScript.
+7. **Composable future**: Skills, plugins, MCP servers, subagents, and automations are the extension model. The app is becoming a workflow host.
 
 ---
 
-*Analysis performed on 2026-04-14. App version: 26.409.20454 (Build 1462).*
+*Updated on 2026-06-11. Local app inspected: `26.608.12217` (Build 3722), `codex-cli 0.130.0`. Earlier baseline: 2026-04-14, app version `26.409.20454` (Build 1462).*
